@@ -1,0 +1,61 @@
+name: Feature Request
+description: 新機能を提案する
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        機能提案ありがとうございます！以下の情報を提供してください。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 関連する問題
+      description: 機能リクエストは問題に関連していますか？説明してください
+      placeholder: 常にイライラする...
+    validations:
+      required: false
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: 希望する解決策
+      description: どのように動作すべきか説明してください
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 代替案
+      description: 検討した代替案や機能があれば説明してください
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: 優先度
+      description: この機能の優先度は？
+      options:
+        - 低 (あったら良い)
+        - 中 (あれば便利)
+        - 高 (ぜひ実装してほしい)
+        - 必須 (ないと困る)
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: 追加コンテキスト
+      description: 機能リクエストに関するその他のコンテキスト、モックアップ、スクリーンショットなどをここに追加してください
+
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: 確認
+      options:
+        - label: 既存のIssueで同様の提案がないことを確認しました
+          required: true
+        - label: この機能がプロジェクトの範囲内にあると考えています
+          required: true

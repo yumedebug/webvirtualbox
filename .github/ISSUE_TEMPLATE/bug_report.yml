@@ -1,0 +1,77 @@
+name: Bug Report
+description: バグを報告する
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        バグ報告ありがとうございます！以下の情報を提供してください。
+
+  - type: textarea
+    id: description
+    attributes:
+      label: バグの説明
+      description: バグについて明確で簡潔な説明をしてください
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 再現手順
+      description: バグを再現する手順を記載してください
+      placeholder: |
+        1. '...'をクリック
+        2. '...'を入力
+        3. '...'までスクロール
+        4. エラーが発生
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期待される動作
+      description: 期待される動作について明確で簡潔な説明をしてください
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 実際の動作
+      description: 実際の動作について明確で簡潔な説明をしてください
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 環境
+      description: 以下の情報を記載してください
+      value: |
+        - OS: [例: Windows 11, macOS 14, Ubuntu 22.04]
+        - ブラウザ: [例: Chrome 120, Firefox 121, Safari 17]
+        - バージョン: [例: 1.0.0]
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: スクリーンショット
+      description: 該当する場合は、スクリーンショットを追加してください
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: ログ
+      description: ブラウザのコンソールログやエラーメッセージをコピー＆ペーストしてください
+      render: shell
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: 追加情報
+      description: 問題に関するその他のコンテキストをここに追加してください
