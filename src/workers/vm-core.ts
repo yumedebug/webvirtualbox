@@ -124,19 +124,34 @@ export class Flags {
   updateFlags8(result: number) {
     this.setZF((result & 0xFF) === 0);
     this.setSF((result & 0x80) !== 0);
-    this.setPF(((result & 0xFF).toString(2).split('1').length - 1) % 2 === 0);
+    // Parity: count bits in low byte
+    let v = result & 0xFF;
+    v ^= v >> 4;
+    v ^= v >> 2;
+    v ^= v >> 1;
+    this.setPF((v & 1) === 0);
   }
 
   updateFlags16(result: number) {
     this.setZF((result & 0xFFFF) === 0);
     this.setSF((result & 0x8000) !== 0);
-    this.setPF(((result & 0xFF).toString(2).split('1').length - 1) % 2 === 0);
+    // Parity: count bits in low byte only
+    let v = result & 0xFF;
+    v ^= v >> 4;
+    v ^= v >> 2;
+    v ^= v >> 1;
+    this.setPF((v & 1) === 0);
   }
 
   updateFlags32(result: number) {
     this.setZF(result === 0);
     this.setSF((result & 0x80000000) !== 0);
-    this.setPF(((result & 0xFF).toString(2).split('1').length - 1) % 2 === 0);
+    // Parity: count bits in low byte only
+    let v = result & 0xFF;
+    v ^= v >> 4;
+    v ^= v >> 2;
+    v ^= v >> 1;
+    this.setPF((v & 1) === 0);
   }
 }
 
@@ -348,22 +363,22 @@ export class VMCore {
     // AH=0x0F: Get video mode
     
     // INT 10h dispatcher
-    // Layout:
+    // Layout (corrected to avoid overlaps):
     // 0x1000: CMP AH,0x00 (3) JZ set_mode (2)   → next_ip=0x1005, target=0x1020, offset=0x1B
     // 0x1005: CMP AH,0x02 (3) JZ set_cursor (2) → next_ip=0x100A, target=0x1030, offset=0x26
     // 0x100A: CMP AH,0x03 (3) JZ get_cursor (2) → next_ip=0x100F, target=0x1050, offset=0x41
-    // 0x100F: CMP AH,0x06 (3) JZ scroll_up (2)  → next_ip=0x1014, target=0x1060, offset=0x4C
-    // 0x1014: CMP AH,0x0E (3) JZ teletype (2)   → next_ip=0x1019, target=0x1080, offset=0x67
-    // 0x1019: CMP AH,0x0F (3) JZ get_mode (2)   → next_ip=0x101E, target=0x1070, offset=0x52
+    // 0x100F: CMP AH,0x06 (3) JZ scroll_up (2)  → next_ip=0x1014, target=0x1070, offset=0x5C
+    // 0x1014: CMP AH,0x0E (3) JZ teletype (2)   → next_ip=0x1019, target=0x10A0, offset=0x87
+    // 0x1019: CMP AH,0x0F (3) JZ get_mode (2)   → next_ip=0x101E, target=0x1090, offset=0x72
     // 0x101E: IRET
     //
     // Handlers:
     // set_mode   = 0x1020 (11 bytes, ends 0x102B)
-    // set_cursor = 0x1030 (23 bytes, ends 0x1046)
-    // get_cursor = 0x1050 (14 bytes, ends 0x105D)
-    // scroll_up  = 0x1060 (19 bytes, ends 0x1073)
-    // get_mode   = 0x1070 (7 bytes, ends 0x1076)
-    // teletype   = 0x1080
+    // set_cursor = 0x1030 (23 bytes, ends 0x1047)
+    // get_cursor = 0x1050 (19 bytes, ends 0x1063)
+    // scroll_up  = 0x1070 (26 bytes, ends 0x108A)
+    // get_mode   = 0x1090 (7 bytes, ends 0x1097)
+    // teletype   = 0x10A0
     
     bios[o++] = 0x80; bios[o++] = 0xFC; bios[o++] = 0x00; // CMP AH, 0x00
     bios[o++] = 0x74; bios[o++] = 0x1B; // JZ set_mode (0x1005+0x1B=0x1020)
@@ -375,13 +390,13 @@ export class VMCore {
     bios[o++] = 0x74; bios[o++] = 0x41; // JZ get_cursor (0x100F+0x41=0x1050)
     
     bios[o++] = 0x80; bios[o++] = 0xFC; bios[o++] = 0x06; // CMP AH, 0x06
-    bios[o++] = 0x74; bios[o++] = 0x4C; // JZ scroll_up (0x1014+0x4C=0x1060)
+    bios[o++] = 0x74; bios[o++] = 0x5C; // JZ scroll_up (0x1014+0x5C=0x1070)
     
     bios[o++] = 0x80; bios[o++] = 0xFC; bios[o++] = 0x0E; // CMP AH, 0x0E
-    bios[o++] = 0x74; bios[o++] = 0x67; // JZ teletype (0x1019+0x67=0x1080)
+    bios[o++] = 0x74; bios[o++] = 0x87; // JZ teletype (0x1019+0x87=0x10A0)
     
     bios[o++] = 0x80; bios[o++] = 0xFC; bios[o++] = 0x0F; // CMP AH, 0x0F
-    bios[o++] = 0x74; bios[o++] = 0x52; // JZ get_mode (0x101E+0x52=0x1070)
+    bios[o++] = 0x74; bios[o++] = 0x72; // JZ get_mode (0x101E+0x72=0x1090)
     
     bios[o++] = 0xCF; // IRET (at 0x101E, ends at 0x101F)
     
@@ -425,8 +440,8 @@ export class VMCore {
     bios[o++] = 0x30; bios[o++] = 0xE4; // XOR AH, AH
     bios[o++] = 0xCF; // IRET
     
-    // Scroll up (offset 0x1060)
-    o = 0x1060;
+    // Scroll up (offset 0x1070)
+    o = 0x1070;
     bios[o++] = 0x50; // PUSH AX
     bios[o++] = 0x51; // PUSH CX
     bios[o++] = 0x57; // PUSH DI
@@ -444,18 +459,18 @@ export class VMCore {
     bios[o++] = 0x58; // POP AX
     bios[o++] = 0xCF; // IRET
     
-    // Get video mode (offset 0x1070)
-    o = 0x1070;
+    // Get video mode (offset 0x1090)
+    o = 0x1090;
     bios[o++] = 0xB0; bios[o++] = 0x03; // MOV AL, 3 (mode)
     bios[o++] = 0xB4; bios[o++] = 0x50; // MOV AH, 80 (cols)
     bios[o++] = 0xB7; bios[o++] = 0x00; // MOV BH, 0 (page)
     bios[o++] = 0xCF; // IRET
     
-    // Teletype output (offset 0x1080)
+    // Teletype output (offset 0x10A0)
     // AH=0x0E, AL=char, BH=page
     // Strategy: save AL to CL before overwriting AX
     // Each path (normal/CR/LF) ends with register restore + IRET
-    o = 0x1080;
+    o = 0x10A0;
     
     bios[o++] = 0x52; // PUSH DX
     bios[o++] = 0x53; // PUSH BX
@@ -467,11 +482,11 @@ export class VMCore {
     
     // CMP CL, 0x0D (CR)
     bios[o++] = 0x80; bios[o++] = 0xF9; bios[o++] = 0x0D;
-    bios[o++] = 0x74; bios[o++] = 0x37; // JZ handle_cr (0x108B+0x37=0x10C2)
+    bios[o++] = 0x74; bios[o++] = 0x33; // JZ handle_cr (0x108B+0x33=0x10BE)
     
     // CMP CL, 0x0A (LF)
     bios[o++] = 0x80; bios[o++] = 0xF9; bios[o++] = 0x0A;
-    bios[o++] = 0x74; bios[o++] = 0x47; // JZ handle_lf (0x1090+0x47=0x10D7)
+    bios[o++] = 0x74; bios[o++] = 0x43; // JZ handle_lf (0x1090+0x43=0x10D3)
     
     // === Normal character path ===
     // Get cursor position from BDA
@@ -496,7 +511,7 @@ export class VMCore {
     // Check if cursor >= 2000 (end of screen)
     bios[o++] = 0x81; bios[o++] = 0x3E; bios[o++] = 0x50; bios[o++] = 0x00; // CMP word [0x50], 2000
     bios[o++] = 0xE0; bios[o++] = 0x07;
-    bios[o++] = 0x72; bios[o++] = 0x05; // JB restore (0x10B8+0x05=0x10BD)
+    bios[o++] = 0x72; bios[o++] = 0x00; // JB restore (0x10B9+0x00=0x10B9)
     
     // Reset cursor to 0
     bios[o++] = 0xC7; bios[o++] = 0x06; bios[o++] = 0x50; bios[o++] = 0x00; // MOV word [0x50], 0
@@ -533,7 +548,7 @@ export class VMCore {
     // Check if past end of screen
     bios[o++] = 0x81; bios[o++] = 0x3E; bios[o++] = 0x50; bios[o++] = 0x00; // CMP word [0x50], 2000
     bios[o++] = 0xE0; bios[o++] = 0x07;
-    bios[o++] = 0x72; bios[o++] = 0x05; // JB restore_lf (skip reset)
+    bios[o++] = 0x72; bios[o++] = 0x06; // JB restore_lf (0x10E1+0x06=0x10E7)
     
     // Reset to 0 if past end
     bios[o++] = 0xC7; bios[o++] = 0x06; bios[o++] = 0x50; bios[o++] = 0x00; // MOV word [0x50], 0
@@ -762,8 +777,6 @@ export class VMCore {
   }
 
   executeInstruction(physAddr: number, opcode: number) {
-    let advanced = true;
-    
     switch (opcode) {
       case 0x90: // NOP
         this.eip += 1;
@@ -2237,9 +2250,10 @@ export class VMCore {
       }
     }
     
-    // Draw cursor
-    const cursorRow = Math.floor(this.textCursorPos / 80);
-    const cursorCol = this.textCursorPos % 80;
+    // Draw cursor - read position from BDA (0x0450)
+    const cursorPos = this.readWord(0x0450);
+    const cursorRow = Math.floor(cursorPos / 80);
+    const cursorCol = cursorPos % 80;
     if (cursorRow < 25 && cursorCol < 80) {
       const cpx = cursorCol * 8;
       const cpy = cursorRow * 16 + 14;
@@ -2316,7 +2330,11 @@ export class VMCore {
   }
 
   getFramebuffer(): Uint8Array {
-    return new Uint8Array(this.framebuffer);
+    // Return a copy to prevent external mutation
+    // For performance-critical paths, consider using transferable objects
+    const copy = new Uint8Array(this.framebuffer.length);
+    copy.set(this.framebuffer);
+    return copy;
   }
 
   getFramebufferWidth(): number {
