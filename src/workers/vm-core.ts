@@ -347,29 +347,46 @@ export class VMCore {
     // AH=0x0E: Teletype
     // AH=0x0F: Get video mode
     
-    // Check AH=0x0E first (most common)
-    bios[o++] = 0x80; bios[o++] = 0xFC; bios[o++] = 0x0E; // CMP AH, 0x0E
-    bios[o++] = 0x74; bios[o++] = 0x60; // JZ teletype (+0x60)
+    // INT 10h dispatcher
+    // Layout:
+    // 0x1000: CMP AH,0x00 (3) JZ set_mode (2)   → next_ip=0x1005, target=0x1020, offset=0x1B
+    // 0x1005: CMP AH,0x02 (3) JZ set_cursor (2) → next_ip=0x100A, target=0x1030, offset=0x26
+    // 0x100A: CMP AH,0x03 (3) JZ get_cursor (2) → next_ip=0x100F, target=0x1050, offset=0x41
+    // 0x100F: CMP AH,0x06 (3) JZ scroll_up (2)  → next_ip=0x1014, target=0x1060, offset=0x4C
+    // 0x1014: CMP AH,0x0E (3) JZ teletype (2)   → next_ip=0x1019, target=0x1080, offset=0x67
+    // 0x1019: CMP AH,0x0F (3) JZ get_mode (2)   → next_ip=0x101E, target=0x1070, offset=0x52
+    // 0x101E: IRET
+    //
+    // Handlers:
+    // set_mode   = 0x1020 (11 bytes, ends 0x102B)
+    // set_cursor = 0x1030 (23 bytes, ends 0x1046)
+    // get_cursor = 0x1050 (14 bytes, ends 0x105D)
+    // scroll_up  = 0x1060 (19 bytes, ends 0x1073)
+    // get_mode   = 0x1070 (7 bytes, ends 0x1076)
+    // teletype   = 0x1080
     
     bios[o++] = 0x80; bios[o++] = 0xFC; bios[o++] = 0x00; // CMP AH, 0x00
-    bios[o++] = 0x74; bios[o++] = 0x30; // JZ set_mode
+    bios[o++] = 0x74; bios[o++] = 0x1B; // JZ set_mode (0x1005+0x1B=0x1020)
     
     bios[o++] = 0x80; bios[o++] = 0xFC; bios[o++] = 0x02; // CMP AH, 0x02
-    bios[o++] = 0x74; bios[o++] = 0x38; // JZ set_cursor
+    bios[o++] = 0x74; bios[o++] = 0x26; // JZ set_cursor (0x100A+0x26=0x1030)
     
     bios[o++] = 0x80; bios[o++] = 0xFC; bios[o++] = 0x03; // CMP AH, 0x03
-    bios[o++] = 0x74; bios[o++] = 0x40; // JZ get_cursor
+    bios[o++] = 0x74; bios[o++] = 0x41; // JZ get_cursor (0x100F+0x41=0x1050)
     
     bios[o++] = 0x80; bios[o++] = 0xFC; bios[o++] = 0x06; // CMP AH, 0x06
-    bios[o++] = 0x74; bios[o++] = 0x48; // JZ scroll_up
+    bios[o++] = 0x74; bios[o++] = 0x4C; // JZ scroll_up (0x1014+0x4C=0x1060)
+    
+    bios[o++] = 0x80; bios[o++] = 0xFC; bios[o++] = 0x0E; // CMP AH, 0x0E
+    bios[o++] = 0x74; bios[o++] = 0x67; // JZ teletype (0x1019+0x67=0x1080)
     
     bios[o++] = 0x80; bios[o++] = 0xFC; bios[o++] = 0x0F; // CMP AH, 0x0F
-    bios[o++] = 0x74; bios[o++] = 0x55; // JZ get_mode
+    bios[o++] = 0x74; bios[o++] = 0x52; // JZ get_mode (0x101E+0x52=0x1070)
     
-    bios[o++] = 0xCF; // IRET
+    bios[o++] = 0xCF; // IRET (at 0x101E, ends at 0x101F)
     
-    // Set video mode (offset ~0x1032)
-    o = 0x1000 + 0x32;
+    // Set video mode (offset 0x1020)
+    o = 0x1020;
     // Store mode in BDA
     bios[o++] = 0x50; // PUSH AX
     bios[o++] = 0xB8; bios[o++] = 0x40; bios[o++] = 0x00; // MOV AX, 0x0040
@@ -378,27 +395,26 @@ export class VMCore {
     bios[o++] = 0xA2; bios[o++] = 0x49; bios[o++] = 0x00; // MOV [0x49], AL
     bios[o++] = 0xCF; // IRET
     
-    // Set cursor (offset ~0x103A)
-    o = 0x1000 + 0x3A;
+    // Set cursor (offset 0x1030)
+    o = 0x1030;
     // DH=row, DL=col, BH=page
     bios[o++] = 0x50; // PUSH AX
     bios[o++] = 0x53; // PUSH BX
     bios[o++] = 0xB8; bios[o++] = 0x40; bios[o++] = 0x00; // MOV AX, 0x0040
     bios[o++] = 0x8E; bios[o++] = 0xD8; // MOV DS, AX
-    // Calculate offset: DH * 80 + DL
+    // Calculate offset: DH * 80 + DL (16-bit arithmetic)
     bios[o++] = 0x88; bios[o++] = 0xF0; // MOV AL, DH
     bios[o++] = 0x32; bios[o++] = 0xE4; // XOR AH, AH
     bios[o++] = 0xB3; bios[o++] = 0x50; // MOV BL, 80
-    bios[o++] = 0xF6; bios[o++] = 0xE3; // MUL BL
-    bios[o++] = 0x00; bios[o++] = 0xD0; // ADD AL, DL
-    bios[o++] = 0x32; bios[o++] = 0xE4; // XOR AH, AH
+    bios[o++] = 0xF6; bios[o++] = 0xE3; // MUL BL → AX = DH * 80
+    bios[o++] = 0x01; bios[o++] = 0xD0; // ADD AX, DX (16-bit add, not 8-bit!)
     bios[o++] = 0xA3; bios[o++] = 0x50; bios[o++] = 0x00; // MOV [0x50], AX
     bios[o++] = 0x5B; // POP BX
     bios[o++] = 0x58; // POP AX
     bios[o++] = 0xCF; // IRET
     
-    // Get cursor (offset ~0x1042)
-    o = 0x1000 + 0x42;
+    // Get cursor (offset 0x1050)
+    o = 0x1050;
     bios[o++] = 0xB8; bios[o++] = 0x40; bios[o++] = 0x00; // MOV AX, 0x0040
     bios[o++] = 0x8E; bios[o++] = 0xD8; // MOV DS, AX
     bios[o++] = 0xA1; bios[o++] = 0x50; bios[o++] = 0x00; // MOV AX, [0x50]
@@ -409,8 +425,8 @@ export class VMCore {
     bios[o++] = 0x30; bios[o++] = 0xE4; // XOR AH, AH
     bios[o++] = 0xCF; // IRET
     
-    // Scroll up (offset ~0x104A)
-    o = 0x1000 + 0x4A;
+    // Scroll up (offset 0x1060)
+    o = 0x1060;
     bios[o++] = 0x50; // PUSH AX
     bios[o++] = 0x51; // PUSH CX
     bios[o++] = 0x57; // PUSH DI
@@ -428,81 +444,36 @@ export class VMCore {
     bios[o++] = 0x58; // POP AX
     bios[o++] = 0xCF; // IRET
     
-    // Get video mode (offset ~0x1055)
-    o = 0x1000 + 0x55;
+    // Get video mode (offset 0x1070)
+    o = 0x1070;
     bios[o++] = 0xB0; bios[o++] = 0x03; // MOV AL, 3 (mode)
     bios[o++] = 0xB4; bios[o++] = 0x50; // MOV AH, 80 (cols)
     bios[o++] = 0xB7; bios[o++] = 0x00; // MOV BH, 0 (page)
     bios[o++] = 0xCF; // IRET
     
-    // Teletype output (offset ~0x1060)
-    o = 0x1000 + 0x60;
-    bios[o++] = 0x50; // PUSH AX
-    bios[o++] = 0x51; // PUSH CX
-    bios[o++] = 0x52; // PUSH DX
-    bios[o++] = 0x53; // PUSH BX
-    bios[o++] = 0x06; // PUSH ES
+    // Teletype output (offset 0x1080)
+    // AH=0x0E, AL=char, BH=page
+    // Strategy: save AL to CL before overwriting AX
+    // Each path (normal/CR/LF) ends with register restore + IRET
+    o = 0x1080;
     
-    // Get cursor position from BDA
-    bios[o++] = 0xB8; bios[o++] = 0x40; bios[o++] = 0x00; // MOV AX, 0x0040
-    bios[o++] = 0x8E; bios[o++] = 0xD8; // MOV DS, AX
-    bios[o++] = 0xA1; bios[o++] = 0x50; bios[o++] = 0x00; // MOV AX, [0x50]
-    bios[o++] = 0x89; bios[o++] = 0xC3; // MOV BX, AX
-    bios[o++] = 0xD1; bios[o++] = 0xE3; // SHL BX, 1
-    
-    // Write char to video memory
-    bios[o++] = 0xB8; bios[o++] = 0x00; bios[o++] = 0xB8; // MOV AX, 0xB800
-    bios[o++] = 0x8E; bios[o++] = 0xC0; // MOV ES, AX
-    bios[o++] = 0x58; // POP ES (restore from stack... wait, wrong order)
-    
-    // Let me redo this more carefully
-    // Actually, let me simplify. The stack has: AX, CX, DX, BX, ES
-    // We need to pop in reverse order at the end
-    // For now, let me just write directly
-    
-    // Reset and redo teletype
-    o = 0x1000 + 0x60;
-    
-    // Save registers
-    bios[o++] = 0x50; // PUSH AX
-    bios[o++] = 0x51; // PUSH CX
     bios[o++] = 0x52; // PUSH DX
     bios[o++] = 0x53; // PUSH BX
     bios[o++] = 0x06; // PUSH ES
     bios[o++] = 0x1E; // PUSH DS
     
-    // Get cursor position
-    bios[o++] = 0xB8; bios[o++] = 0x40; bios[o++] = 0x00; // MOV AX, 0x0040
-    bios[o++] = 0x8E; bios[o++] = 0xD8; // MOV DS, AX
-    bios[o++] = 0xA1; bios[o++] = 0x50; bios[o++] = 0x00; // MOV AX, [0x50]
-    bios[o++] = 0x89; bios[o++] = 0xC3; // MOV BX, AX
-    bios[o++] = 0xD1; bios[o++] = 0xE3; // SHL BX, 1
+    // Save character (AL) to CL
+    bios[o++] = 0x88; bios[o++] = 0xC1; // MOV CL, AL
     
-    // Set ES to video memory
-    bios[o++] = 0xB8; bios[o++] = 0x00; bios[o++] = 0xB8; // MOV AX, 0xB800
-    bios[o++] = 0x8E; bios[o++] = 0xC0; // MOV ES, AX
+    // CMP CL, 0x0D (CR)
+    bios[o++] = 0x80; bios[o++] = 0xF9; bios[o++] = 0x0D;
+    bios[o++] = 0x74; bios[o++] = 0x37; // JZ handle_cr (0x108B+0x37=0x10C2)
     
-    // Get char from saved AX (it's at [SP+10] since we pushed 6 regs)
-    // Actually AX was pushed first, so it's deepest
-    // SP+0: DS, SP+2: ES, SP+4: BX, SP+6: DX, SP+8: CX, SP+10: AX
-    bios[o++] = 0x8A; bios[o++] = 0x64; bios[o++] = 0x0A; // MOV AH, [SS:BX+0x0A] -- wrong, need to use stack
+    // CMP CL, 0x0A (LF)
+    bios[o++] = 0x80; bios[o++] = 0xF9; bios[o++] = 0x0A;
+    bios[o++] = 0x74; bios[o++] = 0x47; // JZ handle_lf (0x1090+0x47=0x10D7)
     
-    // Simpler approach: just use the current AL (char is in AL from caller)
-    // But we already pushed AX... Let me use a different approach
-    // Store char in a temp location first
-    
-    // Actually, the simplest fix: don't push AX first, push it last
-    // Let me redo:
-    o = 0x1000 + 0x60;
-    
-    // The char to print is in AL
-    // Save everything except AX
-    bios[o++] = 0x51; // PUSH CX
-    bios[o++] = 0x52; // PUSH DX
-    bios[o++] = 0x53; // PUSH BX
-    bios[o++] = 0x06; // PUSH ES
-    bios[o++] = 0x1E; // PUSH DS
-    
+    // === Normal character path ===
     // Get cursor position from BDA
     bios[o++] = 0xB8; bios[o++] = 0x40; bios[o++] = 0x00; // MOV AX, 0x0040
     bios[o++] = 0x8E; bios[o++] = 0xD8; // MOV DS, AX
@@ -513,8 +484,8 @@ export class VMCore {
     bios[o++] = 0xB8; bios[o++] = 0x00; bios[o++] = 0xB8; // MOV AX, 0xB800
     bios[o++] = 0x8E; bios[o++] = 0xC0; // MOV ES, AX
     
-    // Write char (AL) and attribute (0x07)
-    bios[o++] = 0x26; bios[o++] = 0x88; bios[o++] = 0x07; // MOV [ES:BX], AL
+    // Write char (CL) and attribute (0x07)
+    bios[o++] = 0x26; bios[o++] = 0x88; bios[o++] = 0x0F; // MOV [ES:BX], CL
     bios[o++] = 0x26; bios[o++] = 0xC6; bios[o++] = 0x47; bios[o++] = 0x01; bios[o++] = 0x07; // MOV byte [ES:BX+1], 0x07
     
     // Advance cursor
@@ -522,106 +493,142 @@ export class VMCore {
     bios[o++] = 0x8E; bios[o++] = 0xD8; // MOV DS, AX
     bios[o++] = 0xFF; bios[o++] = 0x06; bios[o++] = 0x50; bios[o++] = 0x00; // INC word [0x50]
     
-    // Check if cursor went past 80 columns
-    bios[o++] = 0x8B; bios[o++] = 0x1E; bios[o++] = 0x50; bios[o++] = 0x00; // MOV BX, [0x50]
-    bios[o++] = 0x83; bios[o++] = 0xFB; bios[o++] = 0x4F; // CMP BX, 79 (80 cols - 1)
-    bios[o++] = 0x76; bios[o++] = 0x08; // JBE skip_scroll
+    // Check if cursor >= 2000 (end of screen)
+    bios[o++] = 0x81; bios[o++] = 0x3E; bios[o++] = 0x50; bios[o++] = 0x00; // CMP word [0x50], 2000
+    bios[o++] = 0xE0; bios[o++] = 0x07;
+    bios[o++] = 0x72; bios[o++] = 0x05; // JB restore (0x10B8+0x05=0x10BD)
     
-    // Scroll: reset cursor to beginning of last line (row 24)
-    bios[o++] = 0xC7; bios[o++] = 0x06; bios[o++] = 0x50; bios[o++] = 0x00; // MOV word [0x50], ...
-    bios[o++] = 0x80; bios[o++] = 0x00; // 24*80 = 1920 = 0x0780
-    bios[o++] = 0x07;
+    // Reset cursor to 0
+    bios[o++] = 0xC7; bios[o++] = 0x06; bios[o++] = 0x50; bios[o++] = 0x00; // MOV word [0x50], 0
+    bios[o++] = 0x00; bios[o++] = 0x00;
     
-    // skip_scroll:
-    // Restore registers
+    // restore: (shared restore code)
     bios[o++] = 0x1F; // POP DS
     bios[o++] = 0x07; // POP ES
     bios[o++] = 0x5B; // POP BX
     bios[o++] = 0x5A; // POP DX
-    bios[o++] = 0x59; // POP CX
+    bios[o++] = 0xCF; // IRET
+    
+    // === handle_cr: cursor to beginning of current row ===
+    // row = cursor / 80; new_cursor = row * 80
+    bios[o++] = 0xA1; bios[o++] = 0x50; bios[o++] = 0x00; // MOV AX, [0x50]
+    bios[o++] = 0xB3; bios[o++] = 0x50; // MOV BL, 80
+    bios[o++] = 0xF6; bios[o++] = 0xF3; // DIV BL → AL=row, AH=col
+    bios[o++] = 0x32; bios[o++] = 0xE4; // XOR AH, AH
+    bios[o++] = 0xB3; bios[o++] = 0x50; // MOV BL, 80
+    bios[o++] = 0xF6; bios[o++] = 0xE3; // MUL BL → AX = row * 80
+    bios[o++] = 0xA3; bios[o++] = 0x50; bios[o++] = 0x00; // MOV [0x50], AX
+    // Fall through to restore
+    
+    bios[o++] = 0x1F; // POP DS
+    bios[o++] = 0x07; // POP ES
+    bios[o++] = 0x5B; // POP BX
+    bios[o++] = 0x5A; // POP DX
+    bios[o++] = 0xCF; // IRET
+    
+    // === handle_lf: advance cursor by 80 (next row) ===
+    bios[o++] = 0x81; bios[o++] = 0x06; bios[o++] = 0x50; bios[o++] = 0x00; // ADD word [0x50], 80
+    bios[o++] = 0x50; bios[o++] = 0x00;
+    
+    // Check if past end of screen
+    bios[o++] = 0x81; bios[o++] = 0x3E; bios[o++] = 0x50; bios[o++] = 0x00; // CMP word [0x50], 2000
+    bios[o++] = 0xE0; bios[o++] = 0x07;
+    bios[o++] = 0x72; bios[o++] = 0x05; // JB restore_lf (skip reset)
+    
+    // Reset to 0 if past end
+    bios[o++] = 0xC7; bios[o++] = 0x06; bios[o++] = 0x50; bios[o++] = 0x00; // MOV word [0x50], 0
+    bios[o++] = 0x00; bios[o++] = 0x00;
+    
+    // restore_lf:
+    bios[o++] = 0x1F; // POP DS
+    bios[o++] = 0x07; // POP ES
+    bios[o++] = 0x5B; // POP BX
+    bios[o++] = 0x5A; // POP DX
     bios[o++] = 0xCF; // IRET
     
     // === INT 13h at offset 0x2000 ===
-    o = 0x2000;
+    // Layout:
+    // 0x2000-0x2016: Dispatcher
+    // 0x2018: reset handler
+    // 0x201C: read handler
+    // 0x2020: params handler
+    // 0x2024: disktype handler
     
-    // Disk services
-    // AH=0x00: Reset
-    // AH=0x02: Read sectors
-    // AH=0x08: Get drive params
-    // AH=0x15: Get disk type
+    o = 0x2000;
     
     // CMP AH, 0x00
     bios[o++] = 0x80; bios[o++] = 0xFC; bios[o++] = 0x00;
-    bios[o++] = 0x74; bios[o++] = 0x06; // JZ reset
+    bios[o++] = 0x74; bios[o++] = 0x13; // JZ reset (0x2005+0x13=0x2018)
     
     // CMP AH, 0x02
     bios[o++] = 0x80; bios[o++] = 0xFC; bios[o++] = 0x02;
-    bios[o++] = 0x74; bios[o++] = 0x0A; // JZ read
+    bios[o++] = 0x74; bios[o++] = 0x12; // JZ read (0x200A+0x12=0x201C)
     
     // CMP AH, 0x08
     bios[o++] = 0x80; bios[o++] = 0xFC; bios[o++] = 0x08;
-    bios[o++] = 0x74; bios[o++] = 0x14; // JZ params
+    bios[o++] = 0x74; bios[o++] = 0x11; // JZ params (0x200F+0x11=0x2020)
     
     // CMP AH, 0x15
     bios[o++] = 0x80; bios[o++] = 0xFC; bios[o++] = 0x15;
-    bios[o++] = 0x74; bios[o++] = 0x1A; // JZ disktype
+    bios[o++] = 0x74; bios[o++] = 0x10; // JZ disktype (0x2014+0x10=0x2024)
     
     // Default: error
     bios[o++] = 0xB4; bios[o++] = 0x01; // MOV AH, 1
     bios[o++] = 0xCF; // IRET
     
-    // Reset (offset 0x2008)
-    o = 0x2000 + 0x08;
+    // Reset handler (offset 0x2018)
+    o = 0x2018;
     bios[o++] = 0x30; bios[o++] = 0xE4; // XOR AH, AH
     bios[o++] = 0xCF; // IRET
     
-    // Read sectors (offset 0x200A) - return success with empty data
-    o = 0x2000 + 0x0C;
+    // Read sectors handler (offset 0x201C)
+    o = 0x201C;
     bios[o++] = 0x30; bios[o++] = 0xE4; // XOR AH, AH
     bios[o++] = 0xCF; // IRET
     
-    // Get drive params (offset 0x2014)
-    o = 0x2000 + 0x16;
+    // Get drive params handler (offset 0x2020)
+    o = 0x2020;
     bios[o++] = 0x30; bios[o++] = 0xE4; // XOR AH, AH
     bios[o++] = 0xCF; // IRET
     
-    // Get disk type (offset 0x201A)
-    o = 0x2000 + 0x1C;
+    // Get disk type handler (offset 0x2024)
+    o = 0x2024;
     bios[o++] = 0x30; bios[o++] = 0xE4; // XOR AH, AH
     bios[o++] = 0xCF; // IRET
     
     // === INT 16h at offset 0x3000 ===
+    // Layout:
+    // 0x3000-0x300F: Dispatcher
+    // 0x3010: read_key handler
+    // 0x3020: check_key handler
+    // 0x3030: get_shift handler
+    
     o = 0x3000;
     
-    // Keyboard services
-    // AH=0x00: Read key (wait)
-    // AH=0x01: Check key
-    // AH=0x02: Get shift flags
-    
     bios[o++] = 0x80; bios[o++] = 0xFC; bios[o++] = 0x00; // CMP AH, 0
-    bios[o++] = 0x74; bios[o++] = 0x08; // JZ read_key
+    bios[o++] = 0x74; bios[o++] = 0x0B; // JZ read_key (0x3005+0x0B=0x3010)
     
     bios[o++] = 0x80; bios[o++] = 0xFC; bios[o++] = 0x01; // CMP AH, 1
-    bios[o++] = 0x74; bios[o++] = 0x12; // JZ check_key
+    bios[o++] = 0x74; bios[o++] = 0x16; // JZ check_key (0x300A+0x16=0x3020)
     
     bios[o++] = 0x80; bios[o++] = 0xFC; bios[o++] = 0x02; // CMP AH, 2
-    bios[o++] = 0x74; bios[o++] = 0x1A; // JZ get_shift
+    bios[o++] = 0x74; bios[o++] = 0x21; // JZ get_shift (0x300F+0x21=0x3030)
     
     bios[o++] = 0xCF; // IRET
     
-    // Read key (wait for key from port 0x60)
-    o = 0x3000 + 0x0A;
+    // Read key handler (offset 0x3010)
+    o = 0x3010;
     // Loop: IN AL, 0x64; TEST AL, 1; JZ loop
-    bios[o++] = 0xE4; bios[o++] = 0x64; // IN AL, 0x64
-    bios[o++] = 0xA8; bios[o++] = 0x01; // TEST AL, 1
-    bios[o++] = 0x74; bios[o++] = 0xFB; // JZ -5 (back to IN)
+    bios[o++] = 0xE4; bios[o++] = 0x64; // IN AL, 0x64 (at 0x3010)
+    bios[o++] = 0xA8; bios[o++] = 0x01; // TEST AL, 1 (at 0x3012)
+    bios[o++] = 0x74; bios[o++] = 0xFA; // JZ -6 (back to 0x3010)
     bios[o++] = 0xE4; bios[o++] = 0x60; // IN AL, 0x60
     bios[o++] = 0x88; bios[o++] = 0xC4; // MOV AH, AL
     bios[o++] = 0x32; bios[o++] = 0xC0; // XOR AL, AL
     bios[o++] = 0xCF; // IRET
     
-    // Check key
-    o = 0x3000 + 0x14;
+    // Check key handler (offset 0x3020)
+    o = 0x3020;
     bios[o++] = 0xE4; bios[o++] = 0x64; // IN AL, 0x64
     bios[o++] = 0xA8; bios[o++] = 0x01; // TEST AL, 1
     bios[o++] = 0x74; bios[o++] = 0x06; // JZ no_key
@@ -633,8 +640,8 @@ export class VMCore {
     bios[o++] = 0xF9; // STC (set carry = no key)
     bios[o++] = 0xCF; // IRET
     
-    // Get shift flags
-    o = 0x3000 + 0x1C;
+    // Get shift flags handler (offset 0x3030)
+    o = 0x3030;
     bios[o++] = 0x32; bios[o++] = 0xC0; // XOR AL, AL
     bios[o++] = 0xCF; // IRET
     
@@ -705,7 +712,7 @@ export class VMCore {
     // === INT 15h at offset 0x6000 ===
     o = 0x6000;
     bios[o++] = 0x80; bios[o++] = 0xFC; bios[o++] = 0x88; // CMP AH, 0x88
-    bios[o++] = 0x74; bios[o++] = 0x06; // JZ ext_mem
+    bios[o++] = 0x74; bios[o++] = 0x03; // JZ ext_mem (0x6005+0x03=0x6008)
     
     bios[o++] = 0x30; bios[o++] = 0xE4; // XOR AH, AH
     bios[o++] = 0xCF; // IRET
@@ -1556,12 +1563,16 @@ export class VMCore {
       case 0x81: {
         const modrm = this.readByte(physAddr + 1);
         const [mod, op, rm] = this.decodeModRM(modrm);
-        const imm = this.readWord(physAddr + 2);
         if (mod === 3) {
+          const imm = this.readWord(physAddr + 2);
           this.execGroup1_16(op, rm, imm, true);
           this.eip += 4;
         } else {
-          this.eip += 4;
+          const addr = this.calcEA(mod, rm, physAddr + 2);
+          const len = this.eaLength(mod, rm);
+          const imm = this.readWord(physAddr + 2 + len);
+          this.execGroup1_mem16(op, addr, imm);
+          this.eip += 2 + len + 2;
         }
         break;
       }
@@ -1576,7 +1587,10 @@ export class VMCore {
           this.execGroup1_16(op, rm, imm & 0xFFFF, true);
           this.eip += 3;
         } else {
-          this.eip += 3;
+          const addr = this.calcEA(mod, rm, physAddr + 2);
+          const len = this.eaLength(mod, rm);
+          this.execGroup1_mem16(op, addr, imm & 0xFFFF);
+          this.eip += 2 + len + 1;
         }
         break;
       }
@@ -1683,6 +1697,22 @@ export class VMCore {
           const addr = this.calcEA(mod, rm, physAddr + 2);
           const len = this.eaLength(mod, rm);
           switch (op) {
+            case 0: { // INC m16
+              const v = this.readWord(addr);
+              const result = (v + 1) & 0xFFFF;
+              this.writeWord(addr, result);
+              this.flags.updateFlags16(result);
+              this.eip += 2 + len;
+              break;
+            }
+            case 1: { // DEC m16
+              const v = this.readWord(addr);
+              const result = (v - 1) & 0xFFFF;
+              this.writeWord(addr, result);
+              this.flags.updateFlags16(result);
+              this.eip += 2 + len;
+              break;
+            }
             case 2: { // CALL m16
               const target = this.readWord(addr);
               this.push16((this.eip + 2 + len) & 0xFFFF);
@@ -1986,6 +2016,23 @@ export class VMCore {
       default: result = a;
     }
     if (op !== 7) this.regs.setReg16(rm, result);
+    this.flags.updateFlags16(result);
+    if (op === 1 || op === 4 || op === 6) { this.flags.setCF(false); this.flags.setOF(false); }
+  }
+
+  execGroup1_mem16(op: number, addr: number, imm: number) {
+    const a = this.readWord(addr);
+    let result: number;
+    switch (op) {
+      case 0: result = (a + imm) & 0xFFFF; this.flags.setCF(a + imm > 0xFFFF); break; // ADD
+      case 1: result = (a | imm) & 0xFFFF; this.flags.setCF(false); break; // OR
+      case 4: result = (a & imm) & 0xFFFF; this.flags.setCF(false); break; // AND
+      case 5: result = (a - imm) & 0xFFFF; this.flags.setCF(a < imm); break; // SUB
+      case 6: result = (a ^ imm) & 0xFFFF; this.flags.setCF(false); break; // XOR
+      case 7: result = (a - imm) & 0xFFFF; this.flags.setCF(a < imm); break; // CMP
+      default: result = a;
+    }
+    if (op !== 7) this.writeWord(addr, result);
     this.flags.updateFlags16(result);
     if (op === 1 || op === 4 || op === 6) { this.flags.setCF(false); this.flags.setOF(false); }
   }
