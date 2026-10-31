@@ -3,7 +3,7 @@ import type { VMConfig } from '../types';
 
 interface Props {
   onClose: () => void;
-  onCreate: (config: VMConfig) => void;
+  onCreate: (config: VMConfig, isoData?: ArrayBuffer) => void;
 }
 
 export function VMCreateDialog({ onClose, onCreate }: Props) {
@@ -31,9 +31,14 @@ export function VMCreateDialog({ onClose, onCreate }: Props) {
       displayHeight: 480,
       networkEnabled: false,
       createdAt: Date.now(),
+      isoName: isoFile?.name,
     };
-    
-    onCreate(config);
+
+    if (isoFile) {
+      isoFile.arrayBuffer().then(data => onCreate(config, data));
+    } else {
+      onCreate(config);
+    }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {

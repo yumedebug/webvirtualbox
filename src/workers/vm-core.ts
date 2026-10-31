@@ -161,6 +161,17 @@ export class VMCore {
   eip = 0;
   halted = false;
   interruptFlag = true;
+  protectedMode = false;
+  cr0 = 0;
+  cr3 = 0;
+  gdtrBase = 0;
+  gdtrLimit = 0;
+  idtrBase = 0;
+  idtrLimit = 0;
+  segmentBases: Record<string, number> = { cs: 0, ds: 0, es: 0, fs: 0, gs: 0, ss: 0 };
+  segmentLimits: Record<string, number> = { cs: 0xFFFFF, ds: 0xFFFFF, es: 0xFFFFF, fs: 0xFFFFF, gs: 0xFFFFF, ss: 0xFFFFF };
+  code32 = false;
+  data32 = false;
   memory: Uint8Array;
   memorySize: number;
   
@@ -179,6 +190,7 @@ export class VMCore {
   // Storage
   diskImage: Uint8Array | null = null;
   isoImage: Uint8Array | null = null;
+  bootOrder = 0;
   
   // PIC
   masterIMR = 0xFF;
@@ -215,6 +227,17 @@ export class VMCore {
     this.eip = 0;
     this.halted = false;
     this.interruptFlag = true;
+    this.protectedMode = false;
+    this.cr0 = 0;
+    this.cr3 = 0;
+    this.gdtrBase = 0;
+    this.gdtrLimit = 0;
+    this.idtrBase = 0;
+    this.idtrLimit = 0;
+    this.segmentBases = { cs: 0, ds: 0, es: 0, fs: 0, gs: 0, ss: 0 };
+    this.segmentLimits = { cs: 0xFFFFF, ds: 0xFFFFF, es: 0xFFFFF, fs: 0xFFFFF, gs: 0xFFFFF, ss: 0xFFFFF };
+    this.code32 = false;
+    this.data32 = false;
     this.textCursorPos = 0;
   }
 
@@ -745,6 +768,11 @@ export class VMCore {
 
   step(): number {
     if (this.halted) return 0;
+
+    if (this.protectedMode) {
+      this.executeProtectedInstruction();
+      return 1;
+    }
     
     const physAddr = ((this.regs.cs & 0xFFFF) << 4) + this.eip;
     let opcode = this.readByte(physAddr);
@@ -774,6 +802,326 @@ export class VMCore {
       this.step();
     }
     this.updateDisplay();
+  }
+
+  executeProtectedInstruction() {
+    let ip = this.eip >>> 0;
+    let addr = this.linearAddress('cs', ip);
+    let opcode = this.readByte(addr);
+    let operand32 = this.code32;
+    let address32 = this.data32;
+
+    this.segmentOverride = -1;
+    while (opcode === 0x26 || opcode === 0x2E || opcode === 0x36 || opcode === 0x3E ||
+      opcode === 0x64 || opcode === 0x65 || opcode === 0x66 || opcode === 0x67) {
+      if (opcode === 0x26) this.segmentOverride = 0;
+      else if (opcode === 0x2E) this.segmentOverride = 1;
+      else if (opcode === 0x36) this.segmentOverride = 2;
+      else if (opcode === 0x3E) this.segmentOverride = 3;
+      else if (opcode === 0x64) this.segmentOverride = 4;
+      else if (opcode === 0x65) this.segmentOverride = 5;
+      if (opcode === 0x66) operand32 = !operand32;
+      else address32 = !address32;
+      ip++;
+      addr = this.linearAddress('cs', ip);
+      opcode = this.readByte(addr);
+    }
+
+    const next = (count: number) => { this.eip = (ip + count) >>> 0; };
+    const reg32 = (r: number) => this.regs.getReg32(r) >>> 0;
+    const setReg = (r: number, value: number) => this.regs.setReg32(r, value >>> 0);
+    const setOperandReg = (r: number, value: number) => {
+      if (operand32) this.regs.setReg32(r, value >>> 0);
+      else this.regs.setReg16(r, value & 0xFFFF);
+    };
+    const readOperand = (address: number) => operand32 ? this.readDword(address) : this.readWord(address);
+    const writeOperand = (address: number, value: number) => {
+      if (operand32) this.writeDword(address, value);
+      else this.writeWord(address, value);
+    };
+    const readByteOperand = (address: number) => this.readByte(address);
+    const writeByteOperand = (address: number, value: number) => this.writeByte(address, value);
+
+    if (opcode >= 0xB8 && opcode <= 0xBF) {
+      const reg = opcode - 0xB8;
+      const value = operand32 ? this.readDword(addr + 1) : this.readWord(addr + 1);
+      setOperandReg(reg, value);
+      next(operand32 ? 5 : 3);
+      return;
+    }
+
+    if (opcode === 0x88 || opcode === 0x8A || opcode === 0xC6 || opcode === 0x84 ||
+      opcode === 0xA8) {
+      const modrm = opcode === 0xA8 ? 0xC0 : this.readByte(addr + 1);
+      const [mod, reg, rm] = this.decodeModRM(modrm);
+      const [ea, length] = mod === 3 ? [0, 0] : this.protectedEA(mod, rm, addr + 2, address32);
+      const left = mod === 3 ? this.regs.getReg8(rm) : readByteOperand(ea);
+      if (opcode === 0x88) {
+        const value = this.regs.getReg8(reg);
+        if (mod === 3) this.regs.setReg8(rm, value); else writeByteOperand(ea, value);
+        next(2 + length);
+      } else if (opcode === 0x8A) {
+        this.regs.setReg8(reg, left);
+        next(2 + length);
+      } else if (opcode === 0xC6) {
+        const value = this.readByte(addr + 2 + length);
+        if (mod === 3) this.regs.setReg8(rm, value); else writeByteOperand(ea, value);
+        next(3 + length);
+      } else {
+        const value = opcode === 0xA8 ? this.readByte(addr + 1) : this.regs.getReg8(reg);
+        const result = left & value;
+        this.flags.setCF(false);
+        this.flags.setOF(false);
+        this.flags.updateFlags8(result);
+        next(opcode === 0xA8 ? 2 : 2 + length);
+      }
+      return;
+    }
+
+    if (opcode === 0xC7) {
+      const modrm = this.readByte(addr + 1);
+      const [mod, , rm] = this.decodeModRM(modrm);
+      const [ea, length] = mod === 3 ? [0, 0] : this.protectedEA(mod, rm, addr + 2, address32);
+      const value = operand32 ? this.readDword(addr + 2 + length) : this.readWord(addr + 2 + length);
+      if (mod === 3) setOperandReg(rm, value); else writeOperand(ea, value);
+      next(2 + length + (operand32 ? 4 : 2));
+      return;
+    }
+
+    if (opcode >= 0x70 && opcode <= 0x7F) {
+      const offset = this.readByte(addr + 1);
+      const signed = offset > 0x7F ? offset - 0x100 : offset;
+      this.eip = this.conditionMet(opcode & 0x0F) ? (ip + 2 + signed) >>> 0 : (ip + 2) >>> 0;
+      return;
+    }
+
+    if (opcode >= 0x40 && opcode <= 0x47) {
+      const reg = opcode - 0x40;
+      const value = operand32 ? (reg32(reg) + 1) >>> 0 : (this.regs.getReg16(reg) + 1) & 0xFFFF;
+      setOperandReg(reg, value);
+      if (operand32) this.flags.updateFlags32(value);
+      else this.flags.updateFlags16(value);
+      next(1);
+      return;
+    }
+
+    if (opcode >= 0x48 && opcode <= 0x4F) {
+      const reg = opcode - 0x48;
+      const value = operand32 ? (reg32(reg) - 1) >>> 0 : (this.regs.getReg16(reg) - 1) & 0xFFFF;
+      setReg(reg, value);
+      if (operand32) this.flags.updateFlags32(value);
+      else this.flags.updateFlags16(value);
+      next(1);
+      return;
+    }
+
+    if (opcode >= 0x50 && opcode <= 0x57) {
+      const value = operand32 ? reg32(opcode - 0x50) : this.regs.getReg16(opcode - 0x50);
+      if (operand32) this.push32(value);
+      else this.push16(value);
+      next(1);
+      return;
+    }
+
+    if (opcode >= 0x58 && opcode <= 0x5F) {
+      const reg = opcode - 0x58;
+      if (operand32) setReg(reg, this.pop32());
+      else this.regs.setReg16(reg, this.pop16());
+      next(1);
+      return;
+    }
+
+    switch (opcode) {
+      case 0x90:
+        next(1);
+        return;
+      case 0xF4:
+        this.halted = true;
+        return;
+      case 0xFA:
+        this.interruptFlag = false;
+        this.flags.setIF(false);
+        next(1);
+        return;
+      case 0xFB:
+        this.interruptFlag = true;
+        this.flags.setIF(true);
+        next(1);
+        return;
+      case 0xE9: {
+        const offset = operand32 ? this.readDword(addr + 1) : this.readWord(addr + 1);
+        const signed = operand32 ? (offset | 0) : (offset > 0x7FFF ? offset - 0x10000 : offset);
+        this.eip = (ip + (operand32 ? 5 : 3) + signed) >>> 0;
+        return;
+      }
+      case 0xE8: {
+        const offset = operand32 ? this.readDword(addr + 1) : this.readWord(addr + 1);
+        const size = operand32 ? 5 : 3;
+        const signed = operand32 ? (offset | 0) : (offset > 0x7FFF ? offset - 0x10000 : offset);
+        if (operand32) this.push32(ip + size); else this.push16(ip + size);
+        this.eip = (ip + size + signed) >>> 0;
+        return;
+      }
+      case 0xEB: {
+        const offset = this.readByte(addr + 1);
+        this.eip = (ip + 2 + (offset > 127 ? offset - 256 : offset)) >>> 0;
+        return;
+      }
+      case 0xC3:
+        this.eip = operand32 ? this.pop32() : this.pop16();
+        return;
+      case 0x68: {
+        const value = operand32 ? this.readDword(addr + 1) : this.readWord(addr + 1);
+        if (operand32) this.push32(value); else this.push16(value);
+        next(operand32 ? 5 : 3);
+        return;
+      }
+      case 0x6A: {
+        const value = this.readByte(addr + 1);
+        const signed = value > 127 ? value - 256 : value;
+        if (operand32) this.push32(signed >>> 0); else this.push16(signed & 0xFFFF);
+        next(2);
+        return;
+      }
+      case 0x0D: {
+        const immediate = operand32 ? this.readDword(addr + 1) : this.readWord(addr + 1);
+        const value = (operand32 ? reg32(0) : this.regs.ax()) | immediate;
+        setOperandReg(0, value);
+        this.flags.setCF(false);
+        this.flags.setOF(false);
+        if (operand32) this.flags.updateFlags32(value); else this.flags.updateFlags16(value);
+        next(operand32 ? 5 : 3);
+        return;
+      }
+      case 0x8E: {
+        const modrm = this.readByte(addr + 1);
+        const [mod, reg, rm] = this.decodeModRM(modrm);
+        if (mod === 3) {
+          this.loadProtectedSegment(reg, this.regs.getReg16(rm));
+          next(2);
+        } else {
+          const [ea, length] = this.protectedEA(mod, rm, addr + 2, address32);
+          this.loadProtectedSegment(reg, this.readWord(ea));
+          next(2 + length);
+        }
+        return;
+      }
+      case 0x89:
+      case 0x8B:
+      case 0x01:
+      case 0x03:
+      case 0x31:
+      case 0x33:
+      case 0x85:
+      case 0x81:
+      case 0x83: {
+        const modrm = this.readByte(addr + 1);
+        const [mod, reg, rm] = this.decodeModRM(modrm);
+        const [ea, length] = mod === 3 ? [0, 0] : this.protectedEA(mod, rm, addr + 2, address32);
+        const left = mod === 3 ? (operand32 ? reg32(rm) : this.regs.getReg16(rm)) : readOperand(ea);
+        const right = opcode === 0x81 || opcode === 0x83
+          ? (opcode === 0x81 ? readOperand(addr + 2 + length) : ((this.readByte(addr + 2) << 24) >> 24) >>> 0)
+          : (operand32 ? reg32(reg) : this.regs.getReg16(reg));
+        let result = left;
+        if (opcode === 0x89) result = operand32 ? reg32(reg) : this.regs.getReg16(reg);
+        else if (opcode === 0x8B) result = left;
+        else if (opcode === 0x01) result = (left + (operand32 ? reg32(reg) : this.regs.getReg16(reg))) >>> 0;
+        else if (opcode === 0x03) result = ((operand32 ? reg32(reg) : this.regs.getReg16(reg)) + left) >>> 0;
+        else if (opcode === 0x31 || opcode === 0x33) result = (left ^ (operand32 ? reg32(reg) : this.regs.getReg16(reg))) >>> 0;
+        else if (opcode === 0x85) result = left & (operand32 ? reg32(reg) : this.regs.getReg16(reg));
+        else if ((modrm >> 3 & 7) === 7) result = (left - right) >>> 0;
+        else result = (left + right) >>> 0;
+
+        if (opcode === 0x8B || opcode === 0x03 || opcode === 0x33) setOperandReg(reg, result);
+        else if (opcode !== 0x85 && !((opcode === 0x81 || opcode === 0x83) && (modrm >> 3 & 7) === 7)) {
+          if (mod === 3) setOperandReg(rm, result); else writeOperand(ea, result);
+        }
+        if (opcode === 0x85 || (opcode >= 0x81 && (modrm >> 3 & 7) === 7)) {
+          if (operand32) this.flags.updateFlags32(result); else this.flags.updateFlags16(result);
+        } else if (operand32) this.flags.updateFlags32(result); else this.flags.updateFlags16(result);
+        next(2 + length + (opcode === 0x81 ? (operand32 ? 4 : 2) : opcode === 0x83 ? 1 : 0));
+        return;
+      }
+      case 0x0F: {
+        const op2 = this.readByte(addr + 1);
+        if (op2 === 0x01) {
+          const modrm = this.readByte(addr + 2);
+          const [mod, op, rm] = this.decodeModRM(modrm);
+          if ((op === 2 || op === 3) && mod !== 3) {
+            const [ea, length] = this.protectedEA(mod, rm, addr + 3, address32);
+            if (op === 2) {
+              this.gdtrLimit = this.readWord(ea);
+              this.gdtrBase = this.readDword(ea + 2);
+            } else {
+              this.idtrLimit = this.readWord(ea);
+              this.idtrBase = this.readDword(ea + 2);
+            }
+            next(3 + length);
+          } else {
+            next(2);
+          }
+          return;
+        }
+        if (op2 === 0x20 || op2 === 0x22) {
+          const modrm = this.readByte(addr + 2);
+          const [, cr, rm] = this.decodeModRM(modrm);
+          if (op2 === 0x20 && cr === 0) setReg(rm, this.cr0);
+          if (op2 === 0x20 && cr === 3) setReg(rm, this.cr3);
+          if (op2 === 0x22 && cr === 0) {
+            this.cr0 = reg32(rm);
+            this.protectedMode = (this.cr0 & 1) !== 0;
+          }
+          if (op2 === 0x22 && cr === 3) this.cr3 = reg32(rm);
+          next(3);
+          return;
+        }
+        if (op2 >= 0x80 && op2 <= 0x8F) {
+          const offset = operand32 ? this.readDword(addr + 2) : this.readWord(addr + 2);
+          const size = operand32 ? 6 : 4;
+          const signed = operand32 ? (offset | 0) : (offset > 0x7FFF ? offset - 0x10000 : offset);
+          const cond = this.conditionMet(op2 & 0x0F);
+          this.eip = cond ? (ip + size + signed) >>> 0 : (ip + size) >>> 0;
+          return;
+        }
+        next(2);
+        return;
+      }
+      case 0xEA: {
+        const offset = this.code32 ? this.readDword(addr + 1) : this.readWord(addr + 1);
+        const selector = this.readWord(addr + (this.code32 ? 5 : 3));
+        this.loadProtectedSegment(1, selector);
+        this.eip = offset >>> 0;
+        return;
+      }
+      case 0xFF: {
+        const modrm = this.readByte(addr + 1);
+        const [mod, op, rm] = this.decodeModRM(modrm);
+        if (mod === 3 && op === 2) {
+          this.push32(ip + 2);
+          this.eip = reg32(rm);
+        } else if (mod === 3 && op === 4) {
+          this.eip = reg32(rm);
+        } else {
+          next(2);
+        }
+        return;
+      }
+        case 0xCD: {
+          const vector = this.readByte(addr + 1);
+          this.enterProtectedInterrupt(vector, ip + 2, operand32);
+          return;
+        }
+        case 0xCF: {
+          this.eip = operand32 ? this.pop32() : this.pop16();
+          const selector = operand32 ? this.pop32() : this.pop16();
+          this.loadProtectedSegment(1, selector);
+          this.flags.setRaw(operand32 ? this.pop32() : this.pop16());
+          this.interruptFlag = this.flags.IF();
+          return;
+        }
+      default:
+        next(1);
+    }
   }
 
   executeInstruction(physAddr: number, opcode: number) {
@@ -1945,6 +2293,35 @@ export class VMCore {
       // SETcc
       case 0x0F: {
         const secondOp = this.readByte(physAddr + 1);
+        if (secondOp === 0x01) {
+          const modrm = this.readByte(physAddr + 2);
+          const [mod, op, rm] = this.decodeModRM(modrm);
+          if (op === 2 && mod !== 3) {
+            const addr = this.calcEA(mod, rm, physAddr + 3);
+            this.gdtrLimit = this.readWord(addr);
+            this.gdtrBase = this.readDword(addr + 2);
+            this.eip += 3 + this.eaLength(mod, rm);
+          } else {
+            this.eip += 2;
+          }
+          break;
+        }
+        if (secondOp === 0x20 || secondOp === 0x22) {
+          const modrm = this.readByte(physAddr + 2);
+          const [mod, cr, rm] = this.decodeModRM(modrm);
+          if (mod === 3 && cr === 0) {
+            if (secondOp === 0x20) {
+              this.regs.setReg32(rm, this.cr0);
+            } else {
+              this.cr0 = this.regs.getReg32(rm);
+              if (this.cr0 & 1) this.protectedMode = true;
+            }
+            this.eip += 3;
+          } else {
+            this.eip += 2;
+          }
+          break;
+        }
         if (secondOp >= 0x90 && secondOp <= 0x9F) {
           const modrm = this.readByte(physAddr + 2);
           const [mod, cond, rm] = this.decodeModRM(modrm);
@@ -2013,7 +2390,7 @@ export class VMCore {
     }
     
     // Wrap EIP
-    this.eip &= 0xFFFF;
+    if (!this.protectedMode) this.eip &= 0xFFFF;
   }
 
   execGroup1_16(op: number, rm: number, imm: number, isReg: boolean) {
@@ -2081,6 +2458,159 @@ export class VMCore {
 
   decodeModRM(modrm: number): [number, number, number] {
     return [(modrm >> 6) & 3, (modrm >> 3) & 7, modrm & 7];
+  }
+
+  conditionMet(condition: number): boolean {
+    switch (condition & 0xF) {
+      case 0: return this.flags.of();
+      case 1: return !this.flags.of();
+      case 2: return this.flags.cf();
+      case 3: return !this.flags.cf();
+      case 4: return this.flags.zf();
+      case 5: return !this.flags.zf();
+      case 6: return this.flags.cf() || this.flags.zf();
+      case 7: return !this.flags.cf() && !this.flags.zf();
+      case 8: return this.flags.sf();
+      case 9: return !this.flags.sf();
+      case 10: return this.flags.pf();
+      case 11: return !this.flags.pf();
+      case 12: return this.flags.sf() !== this.flags.of();
+      case 13: return this.flags.sf() === this.flags.of();
+      case 14: return this.flags.zf() || (this.flags.sf() !== this.flags.of());
+      case 15: return !this.flags.zf() && (this.flags.sf() === this.flags.of());
+      default: return false;
+    }
+  }
+
+  enterProtectedInterrupt(vector: number, returnIp: number, operand32: boolean) {
+    const gate = this.idtrBase + (vector & 0xFF) * 8;
+    if ((vector & 0xFF) * 8 + 7 > this.idtrLimit) return;
+    const low = this.readDword(gate);
+    const high = this.readDword(gate + 4);
+    const offset = ((low & 0xFFFF) | ((high & 0xFFFF) << 16)) >>> 0;
+    const selector = (low >>> 16) & 0xFFFF;
+    if (operand32) {
+      this.push32(this.flags.raw());
+      this.push32(this.regs.cs);
+      this.push32(returnIp);
+    } else {
+      this.push16(this.flags.raw());
+      this.push16(this.regs.cs);
+      this.push16(returnIp);
+    }
+    this.flags.setIF(false);
+    this.interruptFlag = false;
+    this.loadProtectedSegment(1, selector);
+    this.eip = operand32 ? offset : offset & 0xFFFF;
+  }
+
+  linearAddress(segment: 'cs' | 'ds' | 'es' | 'fs' | 'gs' | 'ss', offset: number): number {
+    if (!this.protectedMode) {
+      return (((this.regs[segment] & 0xFFFF) << 4) + offset) & 0xFFFFF;
+    }
+    return (this.segmentBases[segment] + (offset >>> 0)) >>> 0;
+  }
+
+  translatePage(linear: number): number {
+    linear >>>= 0;
+    if ((this.cr0 & 0x80000000) === 0) return linear;
+    const directory = this.cr3 & 0xFFFFF000;
+    const pde = this.readPhysicalDword(directory + ((linear >>> 22) & 0x3FF) * 4);
+    if ((pde & 1) === 0) return linear;
+    if (pde & 0x80) return ((pde & 0xFFC00000) | (linear & 0x3FFFFF)) >>> 0;
+    const table = pde & 0xFFFFF000;
+    const pte = this.readPhysicalDword(table + ((linear >>> 12) & 0x3FF) * 4);
+    if ((pte & 1) === 0) return linear;
+    return ((pte & 0xFFFFF000) | (linear & 0xFFF)) >>> 0;
+  }
+
+  readPhysicalDword(addr: number): number {
+    if (addr < 0 || addr + 3 >= this.memorySize) return 0;
+    return (this.memory[addr] | (this.memory[addr + 1] << 8) |
+      (this.memory[addr + 2] << 16) | (this.memory[addr + 3] << 24)) >>> 0;
+  }
+
+  loadProtectedSegment(reg: number, selector: number) {
+    const names: Array<'es' | 'cs' | 'ss' | 'ds' | 'fs' | 'gs'> = ['es', 'cs', 'ss', 'ds', 'fs', 'gs'];
+    const name = names[reg];
+    if (!name || (selector & 0xFFFC) === 0) return;
+    const descriptor = this.gdtrBase + (selector & 0xFFF8);
+    const low = this.readDword(descriptor);
+    const high = this.readDword(descriptor + 4);
+    const base = ((low >>> 16) | ((high & 0xFF) << 16) | ((high >>> 16) << 24)) >>> 0;
+    const limit = ((low & 0xFFFF) | ((high & 0x0F) << 16)) >>> 0;
+    const code = (high & 0x08) !== 0;
+    const default32 = (high & 0x4000) !== 0;
+    this.regs[name] = selector & 0xFFFF;
+    this.segmentBases[name] = base;
+    this.segmentLimits[name] = (high & 0x8000) !== 0 ? ((limit << 12) | 0xFFF) >>> 0 : limit;
+    if (name === 'cs') this.code32 = default32 && code;
+    if (name === 'ds' || name === 'ss') this.data32 = default32;
+  }
+
+  protectedEA(mod: number, rm: number, dispAddr: number, address32: boolean): [number, number] {
+    if (!address32) {
+      const offset = this.calcEA(mod, rm, dispAddr);
+      return [offset, this.eaLength(mod, rm)];
+    }
+    let length = 0;
+    let offset = 0;
+    if (rm === 4) {
+      const sib = this.readByte(dispAddr);
+      const scale = 1 << ((sib >> 6) & 3);
+      const index = (sib >> 3) & 7;
+      const base = sib & 7;
+      length = 1;
+      if (mod === 0 && base === 5) {
+        offset = this.readDword(dispAddr + 1);
+        length += 4;
+      } else {
+        offset = (base === 4 ? this.regs.esp : this.regs.getReg32(base)) >>> 0;
+        if (index !== 4) offset = (offset + this.regs.getReg32(index) * scale) >>> 0;
+        if (mod === 1) {
+          const disp = this.readByte(dispAddr + 1);
+          offset = (offset + (disp > 127 ? disp - 256 : disp)) >>> 0;
+          length++;
+        } else if (mod === 2) {
+          offset = (offset + this.readDword(dispAddr + 1)) >>> 0;
+          length += 4;
+        }
+      }
+    } else if (mod === 0 && rm === 5) {
+      offset = this.readDword(dispAddr);
+      length = 4;
+    } else {
+      const regs = [this.regs.eax, this.regs.ecx, this.regs.edx, this.regs.ebx, this.regs.esp, this.regs.ebp, this.regs.esi, this.regs.edi];
+      offset = regs[rm] >>> 0;
+      if (mod === 1) {
+        const disp = this.readByte(dispAddr);
+        offset = (offset + (disp > 127 ? disp - 256 : disp)) >>> 0;
+        length = 1;
+      } else if (mod === 2) {
+        offset = (offset + this.readDword(dispAddr)) >>> 0;
+        length = 4;
+      }
+    }
+    const segment = rm === 4 || (rm === 5 && mod !== 0) ? 'ss' : 'ds';
+    let selected = segment as 'cs' | 'ds' | 'es' | 'ss' | 'fs' | 'gs';
+    if (this.segmentOverride === 0) selected = 'es';
+    else if (this.segmentOverride === 1) selected = 'cs';
+    else if (this.segmentOverride === 2) selected = 'ss';
+    else if (this.segmentOverride === 3) selected = 'ds';
+    else if (this.segmentOverride === 4) selected = 'fs';
+    else if (this.segmentOverride === 5) selected = 'gs';
+    return [this.linearAddress(selected, offset), length];
+  }
+
+  push32(value: number) {
+    this.regs.esp = (this.regs.esp - 4) >>> 0;
+    this.writeDword(this.linearAddress('ss', this.regs.esp), value);
+  }
+
+  pop32(): number {
+    const value = this.readDword(this.linearAddress('ss', this.regs.esp));
+    this.regs.esp = (this.regs.esp + 4) >>> 0;
+    return value;
   }
 
   calcEA(mod: number, rm: number, dispAddr: number): number {
@@ -2172,13 +2702,13 @@ export class VMCore {
   }
 
   readByte(addr: number): number {
-    addr &= 0xFFFFF;
+    addr = this.protectedMode ? this.translatePage(addr) : addr & 0xFFFFF;
     if (addr < this.memorySize) return this.memory[addr];
     return 0xFF;
   }
 
   writeByte(addr: number, value: number) {
-    addr &= 0xFFFFF;
+    addr = this.protectedMode ? this.translatePage(addr) : addr & 0xFFFFF;
     if (addr < this.memorySize) this.memory[addr] = value & 0xFF;
   }
 
@@ -2186,9 +2716,18 @@ export class VMCore {
     return this.readByte(addr) | (this.readByte(addr + 1) << 8);
   }
 
+  readDword(addr: number): number {
+    return (this.readWord(addr) | (this.readWord(addr + 2) << 16)) >>> 0;
+  }
+
   writeWord(addr: number, value: number) {
     this.writeByte(addr, value & 0xFF);
     this.writeByte(addr + 1, (value >> 8) & 0xFF);
+  }
+
+  writeDword(addr: number, value: number) {
+    this.writeWord(addr, value & 0xFFFF);
+    this.writeWord(addr + 2, (value >>> 16) & 0xFFFF);
   }
 
   ioRead(port: number): number {
@@ -2323,6 +2862,54 @@ export class VMCore {
 
   loadISO(data: Uint8Array) {
     this.isoImage = data;
+  }
+
+  bootFromStorage() {
+    const image = this.bootOrder === 0 ? this.isoImage || this.diskImage : this.diskImage || this.isoImage;
+    if (!image || image.length < 512) return;
+    if (image === this.isoImage && this.loadElToritoBootImage(image)) return;
+    this.loadBootSector(image);
+  }
+
+  loadElToritoBootImage(iso: Uint8Array): boolean {
+    const sectorSize = 2048;
+    const bootRecord = 17 * sectorSize;
+    if (iso.length < bootRecord + sectorSize) return false;
+    if (
+      this.readImageByte(iso, bootRecord) !== 0 ||
+      String.fromCharCode(...iso.slice(bootRecord + 1, bootRecord + 6)) !== 'CD001' ||
+      this.readImageByte(iso, bootRecord + 6) !== 1
+    ) {
+      return false;
+    }
+    const catalogSector = this.readImageDword(iso, bootRecord + 0x47);
+    const catalog = catalogSector * sectorSize;
+    if (catalog + 0x22 > iso.length || this.readImageWord(iso, catalog) !== 0x01) return false;
+    const entry = catalog + 0x20;
+    if (entry + 0x20 > iso.length || (iso[entry] & 0x88) !== 0x88) return false;
+    const sectorCount = this.readImageWord(iso, entry + 6) || 4;
+    const loadRba = this.readImageDword(iso, entry + 8);
+    const imageStart = loadRba * sectorSize;
+    const imageLength = Math.min(sectorCount * 512, iso.length - imageStart);
+    if (imageStart < 0 || imageLength < 512) return false;
+    for (let i = 0; i < 512; i++) {
+      this.memory[0x7C00 + i] = iso[imageStart + i] ?? 0;
+    }
+    this.regs.cs = 0;
+    this.eip = 0x7C00;
+    return true;
+  }
+
+  readImageByte(image: Uint8Array, offset: number): number {
+    return image[offset] ?? 0;
+  }
+
+  readImageWord(image: Uint8Array, offset: number): number {
+    return this.readImageByte(image, offset) | (this.readImageByte(image, offset + 1) << 8);
+  }
+
+  readImageDword(image: Uint8Array, offset: number): number {
+    return (this.readImageWord(image, offset) | (this.readImageWord(image, offset + 2) << 16)) >>> 0;
   }
 
   loadDisk(data: Uint8Array) {

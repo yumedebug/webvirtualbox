@@ -10,6 +10,7 @@ export interface VMConfig {
   displayHeight: number;
   networkEnabled: boolean;
   createdAt: number;
+  isoName?: string;
 }
 
 export interface VMState {

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { VMConfig } from '../types';
 import { VMCore } from '../workers/vm-core';
+import { VMStorage } from '../storage/vm-storage';
 
 interface Props {
   vm: VMConfig;
@@ -18,13 +19,24 @@ export function VMConsole({ vm, onStop, onReset }: Props) {
   const frameCountRef = useRef(0);
 
   useEffect(() => {
+    let disposed = false;
     // Initialize VM
     const memorySize = vm.memoryMB * 1024 * 1024;
     const vmCore = new VMCore(Math.min(memorySize, 16 * 1024 * 1024)); // Cap at 16MB for browser
     vmCore.setBootOrder(vm.bootOrder);
-    vmCore.boot();
-    vmRef.current = vmCore;
-    runningRef.current = true;
+
+    const start = async () => {
+      const storage = new VMStorage();
+      const iso = await storage.getDisk(`${vm.id}:iso`);
+      if (disposed) return;
+      if (iso) vmCore.loadISO(new Uint8Array(iso));
+      vmCore.boot();
+      vmCore.bootFromStorage();
+      vmRef.current = vmCore;
+      runningRef.current = true;
+      animFrameRef.current = requestAnimationFrame(runLoop);
+    };
+    void start();
 
     const runLoop = () => {
       if (!runningRef.current || !vmRef.current) return;
@@ -58,9 +70,8 @@ export function VMConsole({ vm, onStop, onReset }: Props) {
       animFrameRef.current = requestAnimationFrame(runLoop);
     };
 
-    animFrameRef.current = requestAnimationFrame(runLoop);
-
     return () => {
+      disposed = true;
       runningRef.current = false;
       if (animFrameRef.current) {
         cancelAnimationFrame(animFrameRef.current);

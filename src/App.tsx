@@ -25,9 +25,10 @@ export default function App() {
     setLoading(false);
   };
 
-  const handleCreateVM = async (config: VMConfig) => {
+  const handleCreateVM = async (config: VMConfig, isoData?: ArrayBuffer) => {
     const storage = new VMStorage();
     await storage.saveVM(config);
+    if (isoData) await storage.saveDisk(`${config.id}:iso`, isoData);
     setVMs([...vms, config]);
     setShowCreateDialog(false);
   };
